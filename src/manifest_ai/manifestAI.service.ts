@@ -7,14 +7,9 @@ import { PDFLoader } from '@langchain/community/document_loaders/fs/pdf';
 import { CSVLoader } from 'langchain/document_loaders/fs/csv';
 import { TextLoader } from 'langchain/document_loaders/fs/text';
 import { DocxLoader } from '@langchain/community/document_loaders/fs/docx';
-import { from } from "rxjs";
 
 @Injectable()
 export class ManifestAIService implements OnApplicationBootstrap {
-  model;
-  context;
-  chatSession;
-  textSplitter;
   documents;
   embeddingModel = new HuggingFaceTransformersEmbeddings();
   manifestAIBasePath = `./src/docker-volume/`;
@@ -25,10 +20,13 @@ export class ManifestAIService implements OnApplicationBootstrap {
     }
   }
 
-  async processFile(files: Express.Multer.File[]) {
+  async processFile(
+    files: Express.Multer.File[],
+    textSplitter: RecursiveCharacterTextSplitter,
+  ) {
     for (const file of files) {
-      console.log(file.originalname)
-      const index = files.indexOf(file)
+      console.log(file.originalname);
+      const index = files.indexOf(file);
       if (
         fs.existsSync(
           `${this.manifestAIBasePath}uploads/ManifestAI/files/${file.originalname}`,
@@ -61,7 +59,7 @@ export class ManifestAIService implements OnApplicationBootstrap {
           fileLoader = new CSVLoader(filePath);
         }
         const documents = await fileLoader.load();
-        const splittedDocs = await this.textSplitter.splitDocuments(documents);
+        const splittedDocs = await textSplitter.splitDocuments(documents);
         this.documents = splittedDocs;
         const fileVectorFormat = await FaissStore.fromDocuments(
           splittedDocs,
@@ -84,43 +82,51 @@ export class ManifestAIService implements OnApplicationBootstrap {
     files: Express.Multer.File[],
     language: 'en' | 'pl',
   ) {
-    const { LlamaModel, LlamaContext, LlamaChatSession } = await import(
+    const { LlamaContext, LlamaChatSession, LlamaModel } = await import(
       'node-llama-cpp'
-      );
-    this.model = new LlamaModel({
+    );
+    const model = new LlamaModel({
       modelPath: './src/shared/Mistral-7B-Instruct-v0.2.Q3_K_S.gguf',
-      temperature: 0.4,
+      gpuLayers: 999,
       seed: 1,
-      topP: 0.45,
-      topK: 40,
     });
-    this.context = new LlamaContext({
-      model: this.model,
-      contextSize: 32000,
-      batchSize: 32000,
+    const context = new LlamaContext({
+      model: model,
+      contextSize: 8192,
+      batchSize: 16384,
     });
-    this.chatSession = new LlamaChatSession({ context: this.context });
-
-    this.textSplitter = new RecursiveCharacterTextSplitter({
+    const textSplitter = new RecursiveCharacterTextSplitter({
       chunkSize: 200,
       chunkOverlap: 0,
     });
-    await this.processFile(files);
+    await this.processFile(files, textSplitter);
     const relevantDocs = await this.vectorStore.similaritySearch(prompt, 150);
     const usefulText = relevantDocs.map((el) => el.pageContent);
     const usefulInfo = [
       ...new Set(usefulText.filter((el) => el.length > 20)),
     ].join();
-    const answer = await this.chatSession.prompt(
-      prompt.includes('[INST]')
+    const finalPrompt = prompt.includes('[INST]')
         ? `${prompt.replace('{similaritySearchResult}', `EXTRA INFORMATION: ${usefulInfo}`)} EXTRA INFO: ${usefulInfo}`
         : language === 'en'
-        ? `<s>[INST]use this extra information to help user with his task[/INST] EXTRA INFORMATION: ${usefulInfo}</s>TASK: ${prompt}`
-        //? `<s>[INST]use this database scheme to generate SQL request to get valid data for answer question[/INST]SCHEME:${scheme}</s>QUESTION:${prompt}[INST]give only sql request in your answer[/INST]`
-        : `<s>[INST]użyj tych dodatkowych informacji, aby pomóc użytkownikowi w jego zadaniu[/INST] DODATKOWE INFORMACJE: ${usefulInfo}</s>ZADANIE: ${prompt}[INST]odpowiedz po polsku[/INST]`,
+          ? `<s>[INST]use this extra information to help user with his task[/INST] EXTRA INFORMATION: ${usefulInfo}</s>TASK: ${prompt}`
+          : //? `<s>[INST]use this database scheme to generate SQL request to get valid data for answer question[/INST]SCHEME:${scheme}</s>QUESTION:${prompt}[INST]give only sql request in your answer[/INST]`
+          `<s>[INST]użyj tych dodatkowych informacji, aby pomóc użytkownikowi w jego zadaniu[/INST] DODATKOWE INFORMACJE: ${usefulInfo}</s>ZADANIE: ${prompt}[INST]odpowiedz po polsku[/INST]`
       //`[INST]zbierz wszystkie uwaga ostrzegawcze[/INST] DODATKOWE INFORMACJE: ${usefulInfo}, ZADANIE: ${prompt}[INST]odpowiedz tylko po polsku[/INST]`,
-    );
-    console.log(answer);
-    return answer;
+
+    const vectors = context.encode(finalPrompt + '[INST]Your answer is limited in 1000 words [/INST]')
+
+    const answer = [];
+    for await (const val of context.evaluate(vectors, {
+      temperature: 0.4,
+      topP: 0.45,
+      topK: 40,
+    })) {
+      answer.push(val)
+      if (answer.length > 3072) {
+        break
+      }
+    }
+    const decodedAnswer = await context.decode(answer)
+    return decodedAnswer;
   }
 }

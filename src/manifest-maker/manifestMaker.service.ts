@@ -140,7 +140,7 @@ export class ManifestMakerService {
       chunkOverlap: 0,
     });
     await this.processFile(files, textSplitter);
-    const relevantDocs = await this.vectorStore.similaritySearch(prompt, 150);
+    const relevantDocs = await this.vectorStore.similaritySearch(prompt, 50);
     const usefulText = relevantDocs.map((el) => el.pageContent);
     const usefulInfo = [
       ...new Set(usefulText.filter((el) => el.length > 20)),

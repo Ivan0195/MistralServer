@@ -98,7 +98,7 @@ export class ManifestAIService implements OnApplicationBootstrap {
       chunkOverlap: 0,
     });
     await this.processFile(files, textSplitter);
-    const relevantDocs = await this.vectorStore.similaritySearch(prompt, 150);
+    const relevantDocs = await this.vectorStore.similaritySearch(prompt, 35);
     const usefulText = relevantDocs.map((el) => el.pageContent);
     const usefulInfo = [
       ...new Set(usefulText.filter((el) => el.length > 20)),
@@ -107,13 +107,9 @@ export class ManifestAIService implements OnApplicationBootstrap {
       ? `${prompt.replace('{similaritySearchResult}', `EXTRA INFORMATION: ${usefulInfo}`)} EXTRA INFO: ${usefulInfo}`
       : language === 'en'
         ? `<s>[INST]use this extra information to help user with his task[/INST] EXTRA INFORMATION: ${usefulInfo}</s>TASK: ${prompt}`
-        : //? `<s>[INST]use this database scheme to generate SQL request to get valid data for answer question[/INST]SCHEME:${scheme}</s>QUESTION:${prompt}[INST]give only sql request in your answer[/INST]`
-          `<s>[INST]użyj tych dodatkowych informacji, aby pomóc użytkownikowi w jego zadaniu[/INST] DODATKOWE INFORMACJE: ${usefulInfo}</s>ZADANIE: ${prompt}[INST]odpowiedz po polsku[/INST]`;
-    //`[INST]zbierz wszystkie uwaga ostrzegawcze[/INST] DODATKOWE INFORMACJE: ${usefulInfo}, ZADANIE: ${prompt}[INST]odpowiedz tylko po polsku[/INST]`,
+        : `[INST]użyj tych dodatkowych informacji, udziel krótkiej odpowiedzi na następujące pytanie ${usefulInfo}[/INST]${prompt}[INST]odpowiedz po polsku[/INST]`;
 
-    const vectors = context.encode(
-      finalPrompt + '[INST]Your answer is limited in 1000 words [/INST]',
-    );
+    const vectors = context.encode(finalPrompt);
 
     const answer = [];
     for await (const val of context.evaluate(vectors, {

@@ -1,0 +1,11 @@
+root ::= Steps
+Step ::= "{"   ws   "\"step_short_description\":"   ws   string   "}"
+Steplist ::= "[]" | "["   ws   Step   (","   ws   Step)*   "]"
+Steps ::= "{"   ws   "\"steps\":"   ws   Steplist   "}"
+Stepslist ::= "[]" | "["   ws   Steps   (","   ws   Steps)*   "]"
+string ::= "\""   ([^"]*)   "\""
+boolean ::= "true" | "false"
+ws ::= [ \t\n]*
+number ::= [0-9]+   "."?   [0-9]*
+stringlist ::= "["   ws   "]" | "["   ws   string   (","   ws   string)*   ws   "]"
+numberlist ::= "["   ws   "]" | "["   ws   string   (","   ws   number)*   ws   "]"

@@ -1,23 +1,66 @@
-import { Injectable, OnApplicationBootstrap } from '@nestjs/common';
-import { RecursiveCharacterTextSplitter } from 'langchain/text_splitter';
-import { HuggingFaceTransformersEmbeddings } from '@langchain/community/embeddings/hf_transformers';
+import { Injectable } from '@nestjs/common';
 import * as fs from 'fs';
+import { RecursiveCharacterTextSplitter } from 'langchain/text_splitter';
 import { FaissStore } from '@langchain/community/vectorstores/faiss';
 import { PDFLoader } from '@langchain/community/document_loaders/fs/pdf';
 import { CSVLoader } from 'langchain/document_loaders/fs/csv';
 import { TextLoader } from 'langchain/document_loaders/fs/text';
 import { DocxLoader } from '@langchain/community/document_loaders/fs/docx';
+import { HuggingFaceTransformersEmbeddings } from '@langchain/community/embeddings/hf_transformers';
 
 @Injectable()
-export class ManifestAIService implements OnApplicationBootstrap {
+export class ManifestMakerService {
   documents;
   embeddingModel = new HuggingFaceTransformersEmbeddings();
   manifestAIBasePath = `./src/docker-volume/`;
+  grammarBasePath = `./src/manifest-maker/shared/`;
   vectorStore: FaissStore;
-  async onApplicationBootstrap() {
-    if (!fs.existsSync(`${this.manifestAIBasePath}uploads/ManifestAI`)) {
-      fs.mkdirSync(`${this.manifestAIBasePath}uploads/ManifestAI`);
+
+  async generateSteps(subtitles: string, withDescription: boolean) {
+    const {
+      LlamaContext,
+      LlamaModel,
+      LlamaGrammar,
+      LlamaGrammarEvaluationState,
+    } = await import('node-llama-cpp');
+
+    const myGrammar = fs.readFileSync(
+      `${this.grammarBasePath}${withDescription ? 'stepsWithDescription.gbnf' : 'steps.gbnf'}`,
+      'utf-8',
+    );
+
+    const model = new LlamaModel({
+      modelPath: './src/shared/Mistral-7B-Instruct-v0.2.Q3_K_S.gguf',
+      gpuLayers: 999,
+      seed: 1,
+    });
+
+    const grammar = new LlamaGrammar({ grammar: myGrammar });
+
+    const context = new LlamaContext({
+      model: model,
+      contextSize: 8192,
+      batchSize: 16384,
+      grammar,
+    });
+    const vectors = context.encode(`[INST]generate manual[/INST]${subtitles}`);
+
+    const answer = [];
+    for await (const val of context.evaluate(vectors, {
+      temperature: 0.8,
+      topP: 0.95,
+      topK: 40,
+      grammarEvaluationState: new LlamaGrammarEvaluationState({
+        grammar: grammar,
+      }),
+    })) {
+      answer.push(val);
+      if (answer.length > 3072) {
+        break;
+      }
     }
+    const decodedAnswer = await context.decode(answer);
+    return decodedAnswer;
   }
 
   async processFile(
@@ -77,10 +120,9 @@ export class ManifestAIService implements OnApplicationBootstrap {
     }
   }
 
-  async getAnswer(
+  async generateKeyboardVocabulary(
     prompt: string,
     files: Express.Multer.File[],
-    language: 'en' | 'pl',
   ) {
     const { LlamaContext, LlamaModel } = await import('node-llama-cpp');
     const model = new LlamaModel({
@@ -103,22 +145,15 @@ export class ManifestAIService implements OnApplicationBootstrap {
     const usefulInfo = [
       ...new Set(usefulText.filter((el) => el.length > 20)),
     ].join();
-    const finalPrompt = prompt.includes('[INST]')
-      ? `${prompt.replace('{similaritySearchResult}', `EXTRA INFORMATION: ${usefulInfo}`)} EXTRA INFO: ${usefulInfo}`
-      : language === 'en'
-        ? `<s>[INST]use this extra information to help user with his task[/INST] EXTRA INFORMATION: ${usefulInfo}</s>TASK: ${prompt}`
-        : //? `<s>[INST]use this database scheme to generate SQL request to get valid data for answer question[/INST]SCHEME:${scheme}</s>QUESTION:${prompt}[INST]give only sql request in your answer[/INST]`
-          `<s>[INST]użyj tych dodatkowych informacji, aby pomóc użytkownikowi w jego zadaniu[/INST] DODATKOWE INFORMACJE: ${usefulInfo}</s>ZADANIE: ${prompt}[INST]odpowiedz po polsku[/INST]`;
-    //`[INST]zbierz wszystkie uwaga ostrzegawcze[/INST] DODATKOWE INFORMACJE: ${usefulInfo}, ZADANIE: ${prompt}[INST]odpowiedz tylko po polsku[/INST]`,
 
     const vectors = context.encode(
-      finalPrompt + '[INST]Your answer is limited in 1000 words [/INST]',
+      `<s>[INST]You are AI assistant, your name is Taqi. Answer questions. Use this helpful information to answer questions.  Finish your answer with <end> tag.[/INST] ${usefulInfo}</s>[INST]${prompt}[/INST]`,
     );
 
     const answer = [];
     for await (const val of context.evaluate(vectors, {
-      temperature: 0.4,
-      topP: 0.45,
+      temperature: 0.8,
+      topP: 0.95,
       topK: 40,
     })) {
       answer.push(val);

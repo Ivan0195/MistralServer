@@ -35,7 +35,7 @@ export class ManifestMakerController {
     }
   }
 
-  @Post('generateVocabulary')
+  @Post('generateVocabularyFromFile')
   @UseInterceptors(FilesInterceptor('files'))
   generateVocabulary(
     @UploadedFiles() files: Express.Multer.File[],
@@ -43,6 +43,20 @@ export class ManifestMakerController {
   ) {
     try {
       return this.manifestMaker.generateKeyboardVocabulary(prompt, files);
+    } catch (err) {
+      if (err.message) {
+        throw new HttpException(err.message, err.status);
+      }
+      throw new HttpException(err, 500);
+    }
+  }
+
+  @Post('generateVocabulary')
+  generateVocabulary(
+    @Query() { prompt, extraInfo }: { prompt: string; extraInfo: string },
+  ) {
+    try {
+      return this.manifestMaker.generateVocabulary(prompt, extraInfo);
     } catch (err) {
       if (err.message) {
         throw new HttpException(err.message, err.status);

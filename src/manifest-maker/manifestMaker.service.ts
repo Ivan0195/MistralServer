@@ -120,6 +120,38 @@ export class ManifestMakerService {
     }
   }
 
+  async generateVocabulary(prompt: string, extraInfo: string) {
+    const { LlamaContext, LlamaModel } = await import('node-llama-cpp');
+    const model = new LlamaModel({
+      modelPath: './src/shared/Mistral-7B-Instruct-v0.2.Q3_K_S.gguf',
+      gpuLayers: 999,
+      seed: 1,
+    });
+    const context = new LlamaContext({
+      model: model,
+      contextSize: 8192,
+      batchSize: 16384,
+    });
+
+    const vectors = context.encode(
+      `<s>[INST]You are AI assistant, your name is Taqi. Answer questions. Use this helpful information to answer questions.  Finish your answer with <end> tag.[/INST] ${extraInfo}</s>[INST]${prompt}[/INST]`,
+    );
+
+    const answer = [];
+    for await (const val of context.evaluate(vectors, {
+      temperature: 0.8,
+      topP: 0.95,
+      topK: 40,
+    })) {
+      answer.push(val);
+      if (answer.length > 3072) {
+        break;
+      }
+    }
+    const decodedAnswer = await context.decode(answer);
+    return decodedAnswer;
+  }
+
   async generateKeyboardVocabulary(
     prompt: string,
     files: Express.Multer.File[],

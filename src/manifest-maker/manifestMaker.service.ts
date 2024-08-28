@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, HttpException } from '@nestjs/common';
 import * as fs from 'fs';
 import { RecursiveCharacterTextSplitter } from 'langchain/text_splitter';
 import { FaissStore } from '@langchain/community/vectorstores/faiss';
@@ -16,7 +16,11 @@ export class ManifestMakerService {
   grammarBasePath = `./src/manifest-maker/shared/`;
   vectorStore: FaissStore;
 
-  async generateSteps(subtitles: string, withDescription: boolean) {
+  async generateSteps(
+    subtitles: string,
+    withDescription: boolean,
+    withClips?: boolean,
+  ) {
     const {
       LlamaContext,
       LlamaModel,
@@ -25,7 +29,7 @@ export class ManifestMakerService {
     } = await import('node-llama-cpp');
 
     const myGrammar = fs.readFileSync(
-      `${this.grammarBasePath}${withDescription ? 'stepsWithDescription.gbnf' : 'steps.gbnf'}`,
+      `${this.grammarBasePath}${withDescription ? `stepsWithDescription${withClips ? 'Clips' : ''}.gbnf` : `steps${withClips ? 'Clips' : ''}.gbnf`}`,
       'utf-8',
     );
 
@@ -39,16 +43,24 @@ export class ManifestMakerService {
 
     const context = new LlamaContext({
       model: model,
-      contextSize: 8192,
-      batchSize: 16384,
+      contextSize: 20000,
+      batchSize: 30000,
       grammar,
     });
-    const vectors = context.encode(`[INST]generate manual[/INST]${subtitles}`);
+    const vectors = context.encode(
+      withClips
+        ? `<s>[INST]return list of instructions with start time of each step[/INST]${subtitles}</s>[INST]skip introduction and other unnecessary parts[/INST]`
+        : `[INST]return list of instructions[/INST]${subtitles}`,
+    );
+
+    if (vectors.length > 20000) {
+      throw new HttpException('Video is too long', 413);
+    }
 
     const answer = [];
     for await (const val of context.evaluate(vectors, {
       temperature: 0.8,
-      topP: 0.95,
+      topP: 0.94,
       topK: 40,
       grammarEvaluationState: new LlamaGrammarEvaluationState({
         grammar: grammar,
@@ -59,7 +71,21 @@ export class ManifestMakerService {
         break;
       }
     }
-    const decodedAnswer = await context.decode(answer);
+    let decodedAnswer = await context.decode(answer);
+    if (withClips) {
+      const genData = JSON.parse(decodedAnswer);
+      const newData = genData.steps.map((step, index) => {
+        return {
+          ...step,
+          end:
+            index + 1 >= genData.steps.length
+              ? null
+              : genData.steps[index + 1].start,
+        };
+      });
+      genData.steps = newData;
+      decodedAnswer = JSON.stringify(genData);
+    }
     return decodedAnswer;
   }
 
@@ -137,6 +163,10 @@ export class ManifestMakerService {
       `<s>[INST]You are AI assistant, your name is Taqi. Answer questions. Use this helpful information to answer questions.  Finish your answer with <end> tag.[/INST] ${extraInfo}</s>[INST]${prompt}[/INST]`,
     );
 
+    if (vectors.length > 20000) {
+      throw new HttpException('Video is too long', 413);
+    }
+
     const answer = [];
     for await (const val of context.evaluate(vectors, {
       temperature: 0.8,
@@ -164,15 +194,15 @@ export class ManifestMakerService {
     });
     const context = new LlamaContext({
       model: model,
-      contextSize: 8192,
-      batchSize: 16384,
+      contextSize: 20000,
+      batchSize: 30000,
     });
     const textSplitter = new RecursiveCharacterTextSplitter({
       chunkSize: 200,
       chunkOverlap: 0,
     });
     await this.processFile(files, textSplitter);
-    const relevantDocs = await this.vectorStore.similaritySearch(prompt, 50);
+    const relevantDocs = await this.vectorStore.similaritySearch(prompt, 100);
     const usefulText = relevantDocs.map((el) => el.pageContent);
     const usefulInfo = [
       ...new Set(usefulText.filter((el) => el.length > 20)),
@@ -181,6 +211,10 @@ export class ManifestMakerService {
     const vectors = context.encode(
       `<s>[INST]You are AI assistant, your name is Taqi. Answer questions. Use this helpful information to answer questions.  Finish your answer with <end> tag.[/INST] ${usefulInfo}</s>[INST]${prompt}[/INST]`,
     );
+
+    if (vectors.length) {
+      throw new HttpException('Video is too long', 413);
+    }
 
     const answer = [];
     for await (const val of context.evaluate(vectors, {

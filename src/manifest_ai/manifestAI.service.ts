@@ -1,4 +1,8 @@
-import { Injectable, OnApplicationBootstrap } from '@nestjs/common';
+import {
+  HttpException,
+  Injectable,
+  OnApplicationBootstrap,
+} from '@nestjs/common';
 import { RecursiveCharacterTextSplitter } from 'langchain/text_splitter';
 import { HuggingFaceTransformersEmbeddings } from '@langchain/community/embeddings/hf_transformers';
 import * as fs from 'fs';
@@ -46,16 +50,16 @@ export class ManifestAIService implements OnApplicationBootstrap {
         const filePath = `${this.manifestAIBasePath}uploads/ManifestAI/files/${file.originalname}`;
         fs.writeFileSync(filePath, file.buffer);
         let fileLoader: PDFLoader | CSVLoader | TextLoader | DocxLoader;
-        if (file.originalname.includes('.pdf')) {
+        if (file.originalname.toLowerCase().includes('.pdf')) {
           fileLoader = new PDFLoader(filePath);
         }
-        if (file.originalname.includes('.txt')) {
+        if (file.originalname.toLowerCase().includes('.txt')) {
           fileLoader = new TextLoader(filePath);
         }
-        if (file.originalname.includes('.docx')) {
+        if (file.originalname.toLowerCase().includes('.docx')) {
           fileLoader = new DocxLoader(filePath);
         }
-        if (file.originalname.includes('.csc')) {
+        if (file.originalname.toLowerCase().includes('.csc')) {
           fileLoader = new CSVLoader(filePath);
         }
         const documents = await fileLoader.load();
@@ -77,11 +81,20 @@ export class ManifestAIService implements OnApplicationBootstrap {
     }
   }
 
-  async getAnswer(
-    prompt: string,
-    files: Express.Multer.File[],
-    language: 'en' | 'pl',
-  ) {
+  async getAnswer({
+    prompt,
+    files,
+    text,
+    language,
+  }: {
+    prompt: string;
+    files?: Express.Multer.File[];
+    text?: string;
+    language?: 'en' | 'pl';
+  }) {
+    if (!prompt) {
+      throw new HttpException('Prompt is empty', 400);
+    }
     const { LlamaContext, LlamaModel } = await import('node-llama-cpp');
     const model = new LlamaModel({
       modelPath: './src/shared/Mistral-7B-Instruct-v0.2.Q3_K_S.gguf',
@@ -94,20 +107,37 @@ export class ManifestAIService implements OnApplicationBootstrap {
       batchSize: 16384,
     });
     const textSplitter = new RecursiveCharacterTextSplitter({
-      chunkSize: 200,
+      chunkSize: 700,
       chunkOverlap: 0,
     });
-    await this.processFile(files, textSplitter);
-    const relevantDocs = await this.vectorStore.similaritySearch(prompt, 35);
+    if (files) {
+      await this.processFile(files, textSplitter);
+    }
+    if (text) {
+      console.log(text);
+      const filePath = `${this.manifestAIBasePath}uploads/ManifestAI/files/audioNote${Date.now()}.txt`;
+      fs.writeFileSync(filePath, text);
+      const tempVectors = await FaissStore.fromTexts(
+        [text],
+        {},
+        this.embeddingModel,
+      );
+      if (this.vectorStore) {
+        await this.vectorStore.mergeFrom(tempVectors);
+      } else {
+        this.vectorStore = tempVectors;
+      }
+    }
+    const relevantDocs = await this.vectorStore.similaritySearch(prompt, 10);
     const usefulText = relevantDocs.map((el) => el.pageContent);
     const usefulInfo = [
       ...new Set(usefulText.filter((el) => el.length > 20)),
     ].join();
     const finalPrompt = prompt.includes('[INST]')
       ? `${prompt.replace('{similaritySearchResult}', `EXTRA INFORMATION: ${usefulInfo}`)} EXTRA INFO: ${usefulInfo}`
-      : language === 'en'
-        ? `<s>[INST]use this extra information to help user with his task[/INST] EXTRA INFORMATION: ${usefulInfo}</s>TASK: ${prompt}`
-        : `[INST]użyj tych dodatkowych informacji, udziel krótkiej odpowiedzi na następujące pytanie ${usefulInfo}[/INST]${prompt}[INST]odpowiedz po polsku[/INST]`;
+      : language !== 'pl'
+        ? `<s>[INST]use this extra information to answer user's question[/INST] EXTRA INFORMATION: ${usefulInfo}</s>QUESTION: ${prompt}`
+        : `[INST]użyj tych dodatkowych informacji, udziel krótkiej odpowiedzi na następujące pytanie ${usefulInfo}[/INST]${prompt}?[INST]odpowiedz po polsku[/INST]`;
 
     const vectors = context.encode(finalPrompt);
 

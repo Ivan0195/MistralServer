@@ -1,8 +1,8 @@
 import {
+  Body,
   Controller,
   HttpException,
   Post,
-  Query,
   UploadedFiles,
   UseInterceptors,
 } from '@nestjs/common';
@@ -16,14 +16,15 @@ export class ManifestAIController {
   @UseInterceptors(FilesInterceptor('files'))
   uploadFiles(
     @UploadedFiles() files: Express.Multer.File[],
-    @Query() query: { prompt: string; language: 'en' | 'pl' },
+    @Body() query: { prompt: string; text?: string; language: 'en' | 'pl' },
   ) {
     try {
-      return this.manifestAIService.getAnswer(
-        query.prompt,
-        [...files],
-        query.language,
-      );
+      return this.manifestAIService.getAnswer({
+        prompt: query.prompt,
+        files: [...files],
+        text: query.text,
+        language: query.language,
+      });
     } catch (err) {
       console.log('EEERRRROOORR');
       if (err.message) {

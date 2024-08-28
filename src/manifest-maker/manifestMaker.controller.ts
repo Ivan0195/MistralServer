@@ -20,13 +20,19 @@ export class ManifestMakerController {
     {
       subtitles,
       withDescription,
+      withClips,
     }: {
       subtitles: string;
       withDescription: boolean;
+      withClips: boolean;
     },
   ) {
     try {
-      return this.manifestMaker.generateSteps(subtitles, withDescription);
+      return this.manifestMaker.generateSteps(
+        subtitles,
+        withDescription,
+        withClips,
+      );
     } catch (err) {
       if (err.message) {
         throw new HttpException(err.message, err.status);
